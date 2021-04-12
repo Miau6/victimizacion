@@ -1,0 +1,369 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+
+
+
+
+
+```{r setup, include=FALSE}
+library(readxl)
+#Se mete la base de datos
+victimas <- read_excel("Estatal-Victimas-2015-2021_ene2021.xlsx")
+library(dplyr)
+library(tidyr)
+library(lubridate)
+
+#nombramos un vector con el año actual y el mes
+año <- 2021
+mes <- "Enero"
+mes_anterior <- "Diciembre"
+#se le da formato a la base de datos 
+victimas <- gather(victimas, Mes, Carpetas, Enero:Diciembre)
+victimas <- victimas %>%
+  as_tibble() %>%
+  mutate(Periodo = ymd(paste0(Año, "-", Mes, "-01"))) %>%
+  filter(Periodo <= ymd(paste0(año,"-",mes,"-01")))
+#se le cambian el nombre a unas entidades por cuestiones estéticas. 
+victimas$Entidad[victimas$Entidad =="Coahuila de Zaragoza"] <- "Coahuila"
+victimas$Entidad[victimas$Entidad =="Michoacán de Ocampo"] <- "Michoacán"
+victimas$Entidad[victimas$Entidad =="Veracruz de Ignacio de la Llave"] <- "Veracruz"
+victimas$Entidad[victimas$Entidad =="México"] <- "Estado de México"
+
+
+
+#creamos unas bases de datos para el texto
+mujer_mes <- victimas %>% filter(Año==año, Mes==mes, Sexo=="Mujer") 
+mujer_mes_jalisco <- victimas %>% filter(Año==año, Mes==mes, Sexo=="Mujer", Clave_Ent==14)
+Estatal_mes <- mujer_mes %>% group_by(Clave_Ent, Entidad) %>% summarise(Carpetas=sum(Carpetas)) %>% as_tibble()
+###metemos las proyecciones de conapo y le damos formato
+proyecciones <- read.csv("pob_mit_proyecciones.csv", encoding="UTF8")
+proyecciones$CVE_GEO <- as.numeric(proyecciones$CVE_GEO)
+proyecciones <- rename(proyecciones, Clave_Ent=CVE_GEO)
+#creamos la base de datos que vamos a unir
+pob_2020 <- proyecciones %>% filter(AÑO==año, Clave_Ent!=0, SEXO=="Mujeres") %>% group_by(Clave_Ent) %>%
+  summarise(Pob=sum(POBLACION))
+#hacemos la unión de la base de datos victimización y proyecciones de población
+Estatal_mes <- right_join(Estatal_mes, pob_2020, by="Clave_Ent")
+#calculamos la tasa de victimización
+Estatal_mes$Tasa <- 100000*Estatal_mes$Carpetas/Estatal_mes$Pob
+#hacemos la base de datos con los datos de absolutos, relativos y cambios (para la gráfica 1)
+
+
+estatal <- victimas %>%
+  filter(Sexo=="Mujer" ,Periodo %in% c(ymd(paste0(año,"-",mes,"-01")),
+                        ymd(paste0(año,"-",mes,"-01")) %m-% months(1))) %>%
+  group_by(Clave_Ent,Entidad, Periodo, .drop = FALSE) %>%
+  summarise(Actual = sum(Carpetas)) %>%
+  spread(Periodo, Actual)
+#le ponemos los nombres de las variables
+names(estatal) <- c("Clave_Ent", "Entidad", "Previo", "Actual")
+#calculamos variables
+estatal <- estatal %>%
+  full_join(pob_2020, by = "Clave_Ent") %>%
+  mutate(Diferencia = Actual-Previo, Cambio = Actual/Previo - 1,
+         Tasa = Actual*100000/Pob) %>%
+  arrange(desc(Actual))
+library(ggplot2)
+library(scales)
+#creamos la gráfica 1
+g1 <-  ggplot(estatal) +
+  geom_bar(stat = 'identity',
+           aes(reorder(Entidad, Actual), Actual, fill = Cambio)) +
+  geom_text(aes(reorder(Entidad, Actual), Actual+max(Actual)/8),
+            label = estatal$Actual, color = 'black', size = 4) +
+  geom_point(aes(Entidad, y = max(Actual)*1.6,
+                 size = Tasa, color = Tasa))+
+  geom_text(aes(Entidad, y = max(Actual)*1.8,
+                label = round(Tasa,2)), color = 'black', size = 3.5) +
+ 
+  coord_flip() +
+  labs(x = '', y = 'Total de víctimas mujeres',
+       size = 'Tasa', color = 'Tasa')+
+  scale_y_continuous(breaks = trans_breaks(identity, identity, n = 10))+
+  scale_size(breaks = trans_breaks(identity, identity, n = 4), range = c(3, 10))+
+  scale_color_gradient(breaks = trans_breaks(identity, identity, n = 4),
+                       low = '#54B1F6', high = '#142A42', guide = 'legend') +
+  scale_fill_gradientn(colours = c("#0B741f", "#51B552", "#BEF29D",
+                                 "#FFFF01", "#FBB75D", "#F76B2E",
+                                 "#E60105"),
+                       breaks = c(-max(abs(estatal$Cambio)),
+                                  0,max(abs(estatal$Cambio))),
+                       limits = c(-max(abs(estatal$Cambio)),max(abs(estatal$Cambio))),
+                       labels = paste0(round(100*c(-max(abs(estatal$Cambio)),
+                                                   0,
+                                                   max(abs(estatal$Cambio))),1),"%"))
+estatal_tasa <- estatal %>% arrange(desc(Tasa))
+```
+![](Encabezado.png)
+<p style='text-align: right;'> Ficha informativa: 22 de febrero de 2021 </p>
+<center>
+# **Victimización de mujeres**
+<center>
+
+
+<center>
+
+##  **`r mes` `r año`** 
+<center>
+<p>&nbsp;</p>
+
+<div style="text-align: justify">
+De acuerdo con cifras del Secretariado Ejecutivo del Sistema Nacional de Seguridad Pública, `r comma(sum(mujer_mes$Carpetas))` mujeres fueron víctimas de algún presunto delito[^1]  en `r tolower(mes)` de `r año`. De la cifra total, `r sum(mujer_mes_jalisco$Carpetas)` corresponden al estado de Jalisco, con lo que se ubica en la posición número `r which(estatal$Clave_Ent==14)` a nivel nacional, en tanto que, la tasa de victimización femenina[^2] en el estado fue `r round(estatal_tasa$Tasa[estatal_tasa$Clave_Ent==14],2)`, ubicándose en el lugar `r which(estatal_tasa$Clave_Ent==14)` a nivel nacional. La cifra de `r tolower(mes)` representa un `r ifelse(estatal$Cambio[estatal$Clave_Ent==14]>0, "incremento", "decremento")` de `r paste0(100*round(abs(estatal$Cambio[estatal$Clave_Ent==14]),4), "%")` respecto a `r tolower(mes_anterior)`, cuando `r estatal$Previo[estatal$Clave_Ent==14]` mujeres fueron víctimas de algún presunto delito. En el presente se aborda el tema de victimización de mujeres en Jalisco, organizado en dos secciones; en la primera se realiza una comparación de las cifras de victimización en Jalisco durante `r tolower(mes)` de `r año` contra el resto de las entidades, en la segunda, se describe la evolución en el tiempo y por tipo delito únicamente para el estado de Jalisco.<div/>
+<p>&nbsp;</p>
+
+### **Comparación estatal**
+
+<p>&nbsp;</p>
+<div style="text-align: justify">
+La Gráfica 1 muestra que en `r tolower(mes)`, `r comma(estatal$Actual[1])` mujeres fueron víctimas de algún presunto delito en el `r estatal$Entidad[1]`, lo que representa el mayor porcentaje (`r paste0(100*round(estatal$Actual[1]/sum(estatal$Actual),4), "%")`) del total de mujeres victimizadas en el país. `r estatal$Entidad[2]` se ubicó en segundo lugar, con `r comma(estatal$Actual[2])`, y en tercer lugar se encuentra `r ifelse(estatal$Actual[3]==estatal$Actual[4], paste(estatal$Entidad[3], "junto con", estatal$Entidad[4]), estatal$Entidad[3])`, con `r estatal$Actual[3]``r ifelse(estatal$Actual[3]==estatal$Actual[4], paste(" cada uno."), paste("."))` Las entidades que registran la menor cantidad son `r estatal$Entidad[32]` (`r estatal$Actual[32]`), `r estatal$Entidad[31]` (`r estatal$Actual[31]`) y `r estatal$Entidad[30]` (`r estatal$Actual[30]`). <div/>
+
+```{r, include=FALSE}
+#Ordenamos la base de datos para la redacción
+estatal <- estatal %>% arrange(desc(Tasa))
+```
+La gráfica 1 también presenta las tasas de victimización femenina en el mes de `r tolower(mes)`. A nivel nacional, `r estatal$Entidad[1]` tiene la tasa más alta con `r round(estatal$Tasa[1],2)` mujeres que fueron víctimas de algún presunto delito por cada 100,000 mujeres; en orden descendente, le sigue `r estatal$Entidad[2]` con una tasa de `r round(estatal$Tasa[2],2)` y `r estatal$Entidad[3]`, con `r round(estatal$Tasa[3],2)` La cifra más baja se encontró en el estado de `r estatal$Entidad[32]` con `r round(estatal$Tasa[32],2)`, seguido de `r estatal$Entidad[31]` con `r round(estatal$Tasa[31],2)` y `r estatal$Entidad[30]` que tuvo `r round(estatal$Tasa[30],2)` mujeres victimizadas por cada 100,000. `r ifelse(estatal$Tasa[estatal$Clave_Ent==14]<estatal$Tasa[3] & estatal$Tasa[estatal$Clave_Ent==14]>estatal$Tasa[30] , paste("En Jalisco, por cada 100,000 personas del sexo femenino,", round(estatal$Tasa[estatal$Clave_Ent==14],2), "fueron victimizadas, posicionándose en el lugar", which(estatal$Clave_Ent==14), "a nivel nacional"), "")`.
+
+<p>&nbsp;</p>
+
+#### Gráfica 1. Victimización de mujeres en `r tolower(mes)` de `r (año)`: en absolutos, relativos y cambios.
+```{r, echo=FALSE, fig.width=9, fig.height=7}
+#Ponemos gráfica 1
+g1 + ylab("Total víctimas mujeres")
+```
+
+**Fuente:** Elaborado por el IIEG con datos del Secretariado Ejecutivo del Sistema Nacional de Seguridad Pública y proyecciones de CONAPO a mitad de año.
+```{r, include=FALSE}
+#Ordenamos la base de datos para la redacción
+estatal <- estatal %>% arrange(desc(Cambio))
+```
+Los colores de las barras en la gráfica 1 ilustran los cambios porcentuales respecto al mes anterior, los tonos rojos se refieren a incrementos y los verdes a decrementos. En la parte superior derecha se visualiza el recuadro con sus respectivos rangos. `r estatal$Entidad[1]` tuvo un cambio porcentual de `r paste0(100*round(estatal$Cambio[1],4), "%")` siendo la entidad que más incrementó durante el mes, mientras que `r estatal$Entidad[32]` fue la que tuvo mayor decremento con `r paste0(100*abs(round(estatal$Cambio[32],4)), "%")`. `r ifelse(estatal$Cambio[estatal$Clave_Ent==14]<estatal$Cambio[1] & estatal$Cambio[estatal$Clave_Ent==14]>estatal$Cambio[32] , paste("Jalisco tuvo un",ifelse(estatal$Cambio[estatal$Clave_Ent==14]>0, "incremento", "decremento"), "de", paste0(100*round(abs(estatal$Cambio[estatal$Clave_Ent==14]),4), "%")), "")` 
+<p>&nbsp;</p>
+<p>&nbsp;</p>
+
+```{r, include=FALSE}
+#hacemos las bases de datos para la gráfica dinámica
+library(dygraphs)
+library(xts)
+mes_tempo <- victimas %>% filter(Sexo=="Mujer" , Clave_Ent==14, Periodo >= ymd(paste0(2016,"-","Enero","-01")),
+         Periodo <= ymd(paste0(año,"-",mes,"-01")))  
+mes_tempo <- mes_tempo %>% group_by(Periodo) %>% summarise(Víctimas=sum(Carpetas)) %>% 
+  mutate(Media=abs(mean(Víctimas)))
+library(ggrepel)
+#hacemos la base de serie de tiempo para la gráfica 2
+ts <- mes_tempo %>% ggplot(aes(x=Periodo, y=Carpetas)) + geom_line(size=1.8, color="#FBBB27") +
+  geom_point(aes(x=Periodo, y=Carpetas), color="#FBBB27", size=3.5) + 
+  geom_text_repel(label = mes_tempo$Carpetas, color = 'black', size = 4) +
+  geom_hline(yintercept = mean(mes_tempo$Carpetas), linetype = "longdash", size=1.8, color="#7C878E") +
+  geom_label(x =mes_tempo$Periodo[12], y = mean(mes_tempo$Carpetas), label=paste("Media","=",round(mean(mes_tempo$Carpetas)))) 
+
+#Generamos la base de datos final de la gráfica 2
+browny <- xts(x=mes_tempo[,-1], order.by = mes_tempo$Periodo)
+#hacemos la gráfica 2
+tesi_tesi <- dygraph(browny) %>% dyRangeSelector()   
+```
+### **Victimización en Jalisco**
+<p>&nbsp;</p>
+#### **Cambio mensual**
+<p>&nbsp;</p>
+En el mes de `r tolower(mes)` se registraron `r estatal$Actual[estatal$Clave_Ent==14]` mujeres que sufrieron algún presunto delito, mientras que en `r tolower(mes_anterior)` la cifra fue de `r estatal$Previo[estatal$Clave_Ent==14]`. Con respecto al mismo mes del año anterior (`r tolower(mes)` de `r año-1`), hubo un `r ifelse(mes_tempo$Víctimas[mes_tempo$Periodo==ymd(paste0(año,"-",mes,"-01"))]-mes_tempo$Víctimas[mes_tempo$Periodo==ymd(paste0(año-1,"-",mes,"-01"))]>0, "incremento", "decremento")` de `r abs(mes_tempo$Víctimas[mes_tempo$Periodo==ymd(paste0(año-1,"-",mes,"-01"))]-mes_tempo$Víctimas[mes_tempo$Periodo==ymd(paste0(año,"-",mes,"-01"))])` mujeres víctimas de algún presunto delito. En el periodo de enero 2016 – `r tolower(mes)` `r año`, el promedio mensual ha sido de `r round(mean(mes_tempo$Víctimas))`, por lo que el último mes se encuentra por `r ifelse(mean(mes_tempo$Víctimas)<mes_tempo$Víctimas[mes_tempo$Periodo==ymd(paste0(año,"-",mes,"-01"))], "encima", "debajo")` de la media del periodo señalado (gráfica 2). 
+<p>&nbsp;</p>
+#### Gráfica 2. Total de mujeres víctimas de algún presunto delito en Jalisco, enero 2016 a `r tolower(mes)` `r año`.
+```{r, echo=FALSE, fig.width=9, fig.height=7}
+#ponemos la gráfica 2
+tesi_tesi
+```
+
+**Fuente:** Elaborado por el IIEG con datos del Secretariado Ejecutivo del Sistema Nacional de Seguridad Pública. Nota: Grafico interactivo, posicionarse sobre las líneas para observar las cifras.
+<p>&nbsp;</p>
+```{r, include=FALSE}
+#hacemos la base de datos para el gráfico de treemap
+library(treemapify)
+tree <- mujer_mes_jalisco %>% group_by(`Bien jurídico afectado`, `Subtipo de delito`) %>%
+  summarise(Carpetas=sum(Carpetas)) 
+
+
+#le damos homologación a la base de datos para que los nombres no sean tan largos
+tree$`Subtipo de delito`[tree$`Subtipo de delito` == 'Otros delitos contra la sociedad'] <- "Otros"
+tree$`Subtipo de delito`[tree$`Subtipo de delito` == 'Otros delitos que atentan contra la libertad personal'] <- "Otros"
+tree$`Subtipo de delito`[tree$`Subtipo de delito` == 'Otros delitos que atentan contra la vida y la integridad corporal'] <- "Otros"
+tree$`Subtipo de delito`[tree$`Subtipo de delito` == 'Rapto'] <- "Otros"
+tree$`Subtipo de delito`[tree$`Subtipo de delito` == 'Secuestro'] <- "Otros"
+tree$`Subtipo de delito`[tree$`Subtipo de delito` == 'Tráfico de menores'] <- "Otros"
+tree$`Subtipo de delito`[tree$`Subtipo de delito` == 'Trata de personas'] <- "Otros"
+
+#generamos una base de datos para el gráfico de treemap
+tree <- tree %>% group_by(`Subtipo de delito`) %>%
+  summarise(Carpetas=sum(Carpetas))
+#modificamos la base de datos para darle un orden a los subtipos de delitos
+  tree <- tree %>% mutate(Delito = factor(`Subtipo de delito`, 
+                                          levels = c('Corrupción de menores', 'Extorsión', 'Feminicidio',
+                                                     'Homicidio culposo', 'Homicidio doloso', 'Lesiones culposas',
+                                                     'Lesiones dolosas', 'Otros')))
+
+#Generamos una variable que servirá de etiqueta
+tree$label <- paste(tree$Delito, tree$Carpetas)
+tree2 <- mujer_mes_jalisco %>% group_by(`Bien jurídico afectado`, `Subtipo de delito`) %>%
+  summarise(Carpetas=sum(Carpetas))
+library(wesanderson)
+#Generamos la paleta de colores que utilizaremos en treemap
+wes_m <- wes_palette("GrandBudapest2", n=8, type = "continuous")
+wes_m1 <- wes_palette("Darjeeling1", n=8, type = "continuous")
+wes_m2 <- wes_palette("Moonrise3", n=8, type = "continuous")
+wes_m3 <- wes_palette("FantasticFox1", n=8, type = "continuous")
+
+#generamos el gráfico 3 de treemap
+treemap <- tree %>% ggplot(aes(area = Carpetas, fill = Delito, 
+                    label = label)) +
+  geom_treemap() +
+  geom_treemap_text(colour = "ghostwhite", place = "topleft", 
+                    reflow = T, grow = F) + scale_fill_manual(values = wes_m3) +
+ theme(legend.position = "bottom") + 
+  labs(fill="Subtipo de delito")
+#modificamos la base de datos de relacionada a treemap que estará vinculada al texto
+tree <- tree  %>% filter(`Subtipo de delito`!="Otros") %>% arrange(desc(Carpetas))
+
+```
+#### **Distribución por tipo de delito**
+<p>&nbsp;</p>
+En la gráfica 3 se presentan los subtipos de delitos agrupados por bien jurídico. `r tree$Delito[1]` es el subtipo de delito que más víctimas del sexo femenino padeció en `r tolower(mes)` del presente año, con un registro de `r tree$Carpetas[1]` víctimas, en segundo lugar se encuentra, `r ifelse(tree$Carpetas[2]==tree$Carpetas[3], paste( tolower(tree$Delito[2]), "y", tolower(tree$Delito[3]),",que abrieron", tree$Carpetas[3], "cada uno"), paste0(tolower(tree$Delito[2])," ", "con"," ", tree$Carpetas[2], " ", "casos","; y en tercer lugar,"))`  `r ifelse(tree$Carpetas[3]==tree$Carpetas[4], paste0("son"," ",tolower(tree$Delito[3])," ","y"," ",tolower(tree$Delito[4]),", que abrieron"," ",tree$Carpetas[4]," ","cada uno"), paste0(tolower(tree$Delito[3])," " ,"con"," ",tree$Carpetas[3]," ", "casos"))`. 
+```{r, include=FALSE}
+#Generamos una base de datos para relacionarla con el texto
+tree <- mujer_mes_jalisco %>% group_by(`Bien jurídico afectado`, `Subtipo de delito`) %>%
+  summarise(Carpetas=sum(Carpetas)) 
+
+#modificamos la base de datos
+tree$`Subtipo de delito`[tree$`Subtipo de delito` == 'Otros delitos contra la sociedad'] <- "Otros"
+tree$`Subtipo de delito`[tree$`Subtipo de delito` == 'Otros delitos que atentan contra la libertad personal'] <- "Otros"
+tree$`Subtipo de delito`[tree$`Subtipo de delito` == 'Otros delitos que atentan contra la vida y la integridad corporal'] <- "Otros"
+tree$`Subtipo de delito`[tree$`Subtipo de delito` == 'Rapto'] <- "Otros"
+tree$`Subtipo de delito`[tree$`Subtipo de delito` == 'Secuestro'] <- "Otros"
+tree$`Subtipo de delito`[tree$`Subtipo de delito` == 'Tráfico de menores'] <- "Otros"
+tree$`Subtipo de delito`[tree$`Subtipo de delito` == 'Trata de personas'] <- "Otros"
+
+#generamos base de datos para relacionarla con el texto
+tree <- tree %>% group_by(`Subtipo de delito`) %>%
+  summarise(Carpetas=sum(Carpetas))
+#modificamos la base de datos anteriormente creada
+  tree <- tree %>% mutate(Delito = factor(`Subtipo de delito`, 
+                                          levels = c('Corrupción de menores', 'Extorsión', 'Feminicidio',
+                                                     'Homicidio culposo', 'Homicidio doloso', 'Lesiones culposas',
+                                                     'Lesiones dolosas', 'Otros')))
+#generamos un vector con los delitos deseados
+principales <- c("Feminicidio", "Homicidio doloso", "Lesiones dolosas")
+#hacemos un filtro a partir de los delitos deseados
+tree2 <- tree %>% filter(`Subtipo de delito`%in%principales)
+#creamos unas variables para poder vincularla al texto
+tree <- tree %>% mutate(Proporción=100*Carpetas/sum(Carpetas)) %>%
+  mutate(ypos = cumsum(Proporción)- 0.8*Proporción)
+
+```
+Las cifras anteriores se traducen en que `r round(100*tree$Carpetas[tree$Delito=="Lesiones dolosas"]/sum(tree$Carpetas))` de cada 100 mujeres victimizadas en `r tolower(mes)` sufrieron de lesiones dolosas. El conjunto de lesiones dolosas, homicidio doloso y feminicidio, representó el `r paste0(100*round(sum(tree2$Carpetas)/sum(tree$Carpetas),4), "%")` de la victimización de las mujeres en Jalisco en el mes de `r tolower(mes)` (gráfica 3). 
+<p>&nbsp;</p>
+### Gráfica 3. Distribución de la cantidad de víctimas por subtipo de delito, `r tolower(mes)` `r año`
+```{r, echo=FALSE,fig.width=9, fig.height=6}
+#ponemos la gráfica 3
+treemap 
+```
+**Fuente:** Elaborado por el IIEG con datos del Secretariado Ejecutivo del Sistema Nacional de Seguridad Pública
+<p>&nbsp;</p>
+```{r, include=FALSE}
+#generamos una base de datos para poder poner la tabla de los subtipos de delitos po mes
+subtipo <- victimas %>%
+  filter(Clave_Ent==14 ,Sexo=="Mujer" ,Periodo <= ymd(paste0(año,"-",mes,"-01")), Periodo >=
+                        ymd(paste0(2017,"-","Enero","-01")))  %>%
+  group_by(`Subtipo de delito`, Periodo, .drop = FALSE) %>%
+  summarise(Carpetas = sum(Carpetas)) 
+#le damos formato a la base de datos
+subtipo$Periodo <- format(as.Date(subtipo$Periodo), "%Y-%m")
+subtipo$`Subtipo de delito`[subtipo$`Subtipo de delito` == 'Otros delitos contra la sociedad'] <- "Otros"
+subtipo$`Subtipo de delito`[subtipo$`Subtipo de delito` == 'Otros delitos que atentan contra la libertad personal'] <- "Otros"
+subtipo$`Subtipo de delito`[subtipo$`Subtipo de delito` == 'Otros delitos que atentan contra la vida y la integridad corporal'] <- "Otros"
+subtipo$`Subtipo de delito`[subtipo$`Subtipo de delito` == 'Rapto'] <- "Otros"
+subtipo$`Subtipo de delito`[subtipo$`Subtipo de delito` == 'Secuestro'] <- "Otros"
+subtipo$`Subtipo de delito`[subtipo$`Subtipo de delito` == 'Tráfico de menores'] <- "Otros"
+subtipo$`Subtipo de delito`[subtipo$`Subtipo de delito` == 'Trata de personas'] <- "Otros"
+#de la base de datos anterior, creamos una nueva base de datos
+subtipo <- subtipo %>% group_by(`Subtipo de delito`, Periodo)  %>% summarise(Carpetas = sum(Carpetas))
+###Transponemos la base de datos, utlizando como pivote la variable de subtipo de delito
+subtipo <- subtipo %>%  spread(`Subtipo de delito`, Carpetas) 
+#####ojo en esta base de datos se tiene que cambiar mientras que el mes pasado se encuentre el año pasado
+prev <- ymd(paste0(año,"-",mes,"-01")) %m-% months(1)
+subtipo2 <- victimas %>%
+  filter(Clave_Ent==14 ,Sexo=="Mujer" ,Periodo <= ymd(paste0(año,"-",mes,"-01")), Periodo >=
+                        prev)  %>%
+  group_by(`Subtipo de delito`, Periodo, .drop = FALSE) %>%
+  summarise(Actual = sum(Carpetas)) 
+subtipo2$`Subtipo de delito`[subtipo2$`Subtipo de delito` == 'Otros delitos contra la sociedad'] <- "Otros"
+subtipo2$`Subtipo de delito`[subtipo2$`Subtipo de delito` == 'Otros delitos que atentan contra la libertad personal'] <- "Otros"
+subtipo2$`Subtipo de delito`[subtipo2$`Subtipo de delito` == 'Otros delitos que atentan contra la vida y la integridad corporal'] <- "Otros"
+subtipo2$`Subtipo de delito`[subtipo2$`Subtipo de delito` == 'Rapto'] <- "Otros"
+subtipo2$`Subtipo de delito`[subtipo2$`Subtipo de delito` == 'Secuestro'] <- "Otros"
+subtipo2$`Subtipo de delito`[subtipo2$`Subtipo de delito` == 'Tráfico de menores'] <- "Otros"
+subtipo2$`Subtipo de delito`[subtipo2$`Subtipo de delito` == 'Trata de personas'] <- "Otros"
+subtipo2 <- subtipo2 %>% group_by(`Subtipo de delito`, Periodo)  %>% summarise(Actual = sum(Actual))
+#Transpondemos la base de datos
+subtipo2 <- subtipo2 %>%  spread(Periodo, Actual)
+#renombramos las variables
+names(subtipo2) <- c("Subtipo", "Previo", "Actual")
+subtipo2$Diferencia <- subtipo2$Actual - subtipo2$Previo
+subtipo2$Cambio <- ifelse(subtipo2$Previo==0, subtipo2$Actual, subtipo2$Actual/subtipo2$Previo-1)
+
+subtipo2 <- as_tibble(subtipo2)
+#filtramos la base de datos, quitando el subtipo de delito otro
+subtipo2 <- subtipo2 %>% filter(Subtipo!="Otros")  %>% arrange(desc(Cambio))
+#Generamos la base de datos que estará en la página del IIEG
+victimas2 <- victimas %>% filter(Periodo <= ymd(paste0(año,"-",mes,"-01")))  %>%
+  arrange(Periodo, Clave_Ent, `Bien jurídico afectado`) %>% select(-Periodo) %>% rename(Victimas=Carpetas)
+#Guardamos la base de datos
+write.csv(victimas2, paste0("victimas_", mes, año,".csv"), 
+          row.names =FALSE)
+library(knitr)
+library(kableExtra)
+#Generamos una función que coloree los datos dependiendo del valor de estos
+colorize <- function(x, color) {
+  if (knitr::is_latex_output()) {
+    sprintf("\\textcolor{%s}{%s}", color, x)
+  } else if (knitr::is_html_output()) {
+    sprintf("<span style='color: %s;'>%s</span>", color, 
+      x)
+  } else x
+}
+
+#Generamos una variable que se pondrá en el texto
+subtipo2 <- subtipo2 %>% mutate(label= ifelse(subtipo2$Diferencia>0, paste0(subtipo2$Subtipo, " (", colorize(paste0("+", subtipo2$Diferencia), "red"), ")"), paste0(subtipo2$Subtipo, " (", colorize(subtipo2$Diferencia, "green"), ")"))) %>%
+  arrange(desc(Diferencia))
+#Guardamos la gráfica que se pondrá en la página del instituto
+g1 + labs(title = paste0("Victimización de mujeres en ", tolower(mes), " de ", año, " : en absolutos, relativos y cambios."), caption = "Fuente: Elaborado por el IIEG con datos del Secretariado Ejecutivo del Sistema Nacional de Seguridad Pública y proyecciones de CONAPO a mitad de año.", x= "Total víctimas mujeres") #+ theme_minimal()
+library(DT)
+ggsave(paste0(mes,año,".png"), width = 12, height = 7)
+          
+```
+Los presuntos delitos que experimentaron incrementos en `r tolower(mes)` fueron: `r tolower(subtipo2$label[subtipo2$Diferencia>0])[1:length(subtipo2$label[subtipo2$Diferencia>0])-1]`  `r tolower(subtipo2$label[length(subtipo2$label[subtipo2$Diferencia>0])])`. Por otro lado, los presuntos delitos que presentaron disminución fueron: `r tolower(subtipo2$label[subtipo2$Diferencia<0])[1:length(subtipo2$label[subtipo2$Diferencia<0])-1]` y `r tolower(subtipo2$label[7])`. (Tabla 1).
+<p>&nbsp;</p>
+### Tabla 1. Total de mujeres víctimas  por subtipo de delito, enero 2017 – `r tolower(mes)` `r año`
+```{r, echo=FALSE, fig.width=9, fig.height=7}
+#ponemos la base de datos de los subtipos de delitos en formato HTML
+# subtipo %>%
+#   kable() %>%
+#   kable_styling() %>%
+#   scroll_box(width = "900px", height = "350px")
+
+datatable(subtipo)
+
+``` 
+**Fuente:** Elaborado por el IIEG con datos del Secretariado Ejecutivo del Sistema Nacional de Seguridad Pública
+<p>&nbsp;</p>
+
+Se anexa el link de la base de datos con la que se elaboró la ficha. [Base de datos](https://iieg.gob.mx/ns/wp-content/uploads/2021/02/victimas_Enero2021.csv)
+
+<div style="text-align: justify">
+[^1]:  Los delitos que considera el Secretariado Ejecutivo del Sistema Nacional de Seguridad Pública en la base de datos de víctimas son: Aborto, corrupción de menores, extorsión, feminicidio, homicidio, lesiones, otros delitos contra la sociedad, otros delitos que atentan contra la libertad personal, otros delitos que atentan contra la vida y la integridad corporal, rapto, secuestro, trata de personas y tráfico de menores. 
+
+[^2]:  Mujeres víctimas de algún presunto delito por cada 100,000 mujeres.
+<div/>
+
+
+![](Pie de página.png)
